@@ -22,6 +22,7 @@ import net.kibotu.logger.Logger
 import net.kibotu.resourceextension.dp
 import net.kibotu.schlachtensee.databinding.FragmentCurrentTemperatureBinding
 import net.kibotu.schlachtensee.extensions.setOnClickListenerThrottled
+import net.kibotu.schlachtensee.services.network.ConnectivityAndInternetAccess
 import net.kibotu.schlachtensee.ui.base.ViewBindingFragment
 import net.kibotu.schlachtensee.viewmodels.SchlachtenseeApiViewModel
 import java.util.*
@@ -39,6 +40,23 @@ class CurrentTemperatureFragment : ViewBindingFragment<FragmentCurrentTemperatur
     private val viewModel: SchlachtenseeApiViewModel by viewModels()
 
     private val random by lazy { Random() }
+
+    private var networkObserver: ConnectivityAndInternetAccess.NetworkObserver? = null
+
+    override fun onStart() {
+        super.onStart()
+        context?.let { ctx ->
+            networkObserver = viewModel.connectivityManager.observeNetwork(ctx) { state ->
+                Logger.d("[NetworkObserver] connected=${state.connected}, validated=${state.internetValidated}, captivePortal=${state.captivePortalDetected}")
+            }
+        }
+    }
+
+    override fun onStop() {
+        networkObserver?.close()
+        networkObserver = null
+        super.onStop()
+    }
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)

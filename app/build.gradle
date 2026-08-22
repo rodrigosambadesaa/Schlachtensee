@@ -25,8 +25,8 @@ android {
     // region compile options
 
     compileOptions {
-        sourceCompatibility JavaVersion.VERSION_11
-        targetCompatibility JavaVersion.VERSION_11
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
     }
 
     // endregion
@@ -34,7 +34,7 @@ android {
     // region compile options
 
     kotlinOptions {
-        jvmTarget = JavaVersion.VERSION_11
+        jvmTarget = "1.8"
     }
 
     // endregion
@@ -48,7 +48,7 @@ android {
     // region signing configs
 
     signingConfigs {
-        try {
+        if (project.hasProperty('DEBUG_STORE_PASSWORD')) {
             debug {
                 storeFile file(DEBUG_KEYSYORE_PATH)
                 storePassword DEBUG_STORE_PASSWORD
@@ -56,18 +56,13 @@ android {
                 keyPassword DEBUG_KEY_PASSWORD
             }
         }
-        catch (final ignored) {
-            new java.security.spec.InvalidKeySpecException('You should define DEBUG_KEYSTORE_ALLIAS, DEBUG_STORE_PASSWORD, DEBUG_KEY_PASSWORD in gradle.properties.', ignored).printStackTrace()
-        }
-        try {
+        if (project.hasProperty('RELEASE_STORE_PASSWORD')) {
             release {
                 storeFile file(RELEASE_KEYSYORE_PATH)
                 storePassword RELEASE_STORE_PASSWORD
                 keyAlias RELEASE_KEYSTORE_ALIAS
                 keyPassword RELEASE_KEY_PASSWORD
             }
-        } catch (final ignored) {
-            new java.security.spec.InvalidKeySpecException('You should define RELEASE_KEYSTORE_ALIAS, RELEASE_STORE_PASSWORD, RELEASE_KEY_PASSWORD in gradle.properties.', ignored).printStackTrace()
         }
     }
 

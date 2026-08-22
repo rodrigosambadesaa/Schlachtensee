@@ -8,7 +8,7 @@ ext {
     targetSdkVer = 33
 
     // @see https://mvnrepository.com/artifact/org.jetbrains.kotlin/kotlin-stdlib-jdk8
-    kotlin_version = '1.7.21'
+    kotlin_version = '1.9.24'
 
     isCi = rootProject.hasProperty("CI") || rootProject.hasProperty("ci") || System.getenv().containsKey("CI")
     isLocal = project.rootProject.file('local.properties').exists()
@@ -83,12 +83,12 @@ ext.libs = [
         firebaseCore             : "com.google.firebase:firebase-core:21.1.1",
         playCoreKtx              : "com.google.android.play:core-ktx:1.8.1",
 
-        logger                   : "com.github.kibotu:StreamingAndroidLogger:5.0.0",
+        logger                   : "com.github.kibotu:StreamingAndroidLogger:-SNAPSHOT",
         lottie                   : "com.airbnb.android:lottie:5.2.0"
 ]
 
 ext.plugin = [
-        gradleBuildTools: "com.android.tools.build:gradle:7.3.1",
+        gradleBuildTools: "com.android.tools.build:gradle:8.1.4",
         kotlinGradle    : "org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlin_version",
         gms             : "com.google.gms:google-services:4.3.14",
         crashlytics     : "com.google.firebase:firebase-crashlytics-gradle:2.9.2",

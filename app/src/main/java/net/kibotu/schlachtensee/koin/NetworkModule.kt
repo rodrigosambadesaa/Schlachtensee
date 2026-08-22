@@ -2,6 +2,7 @@ package net.kibotu.schlachtensee.koin
 
 import net.kibotu.resourceextension.resLong
 import net.kibotu.schlachtensee.R
+import net.kibotu.schlachtensee.services.network.AppConnectivityManager
 import net.kibotu.schlachtensee.services.network.SchlachtenseeApi
 import okhttp3.OkHttpClient
 import org.koin.dsl.module
@@ -20,6 +21,7 @@ val remoteDataSourceModule = module {
             "http://jmnberlin.de/"
         )
     }
+    single { AppConnectivityManager() }
 }
 
 private fun createOkHttpClient(): OkHttpClient.Builder = OkHttpClient.Builder()
