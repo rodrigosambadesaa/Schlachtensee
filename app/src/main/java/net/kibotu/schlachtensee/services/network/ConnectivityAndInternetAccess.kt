@@ -56,7 +56,8 @@ class ConnectivityAndInternetAccess private constructor(
     private val instanceHosts: List<String>,
     private val instanceResolvers: List<String>,
     private val instanceDnsStrategy: DnsProbeStrategy,
-    private val instanceHttpStrategy: HttpProbeStrategy
+    private val instanceHttpStrategy: HttpProbeStrategy,
+    private val instanceIcmpTargets: List<String>
 ) {
 
     /**
@@ -67,7 +68,8 @@ class ConnectivityAndInternetAccess private constructor(
         normalizeHosts(hosts),
         DEFAULT_DNS_RESOLVERS,
         DefaultDnsProbe(),
-        DefaultHttpProbe()
+        DefaultHttpProbe(),
+        DEFAULT_ICMP_TARGETS
     ) {
         globalHosts = instanceHosts
     }
@@ -84,10 +86,35 @@ class ConnectivityAndInternetAccess private constructor(
         fun onResult(result: InternetResult)
     }
 
+    /**
+     * Receives the result of the optional ICMP diagnostic.
+     *
+     * ICMP is deliberately independent from the normal DNS/HTTP reachability
+     * result. A failed ICMP probe does not mean that Internet access is unavailable.
+     */
+    fun interface IcmpCallback {
+        fun onResult(result: IcmpResult)
+    }
+
     data class InternetResult internal constructor(
         val reachable: Boolean,
         val reachedHost: String?,
         val attemptedHosts: List<String>,
+        val elapsedMilliseconds: Long
+    ) {
+        fun isReachable(): Boolean = reachable
+    }
+
+    /**
+     * Result of the optional ICMP diagnostic.
+     *
+     * This is not an authoritative Internet-availability signal because many
+     * otherwise functional networks deliberately filter ICMP.
+     */
+    data class IcmpResult internal constructor(
+        val reachable: Boolean,
+        val reachedAddress: String?,
+        val attemptedAddresses: List<String>,
         val elapsedMilliseconds: Long
     ) {
         fun isReachable(): Boolean = reachable
@@ -166,8 +193,6 @@ class ConnectivityAndInternetAccess private constructor(
                     private var currentDefaultNetwork: Network? = null
 
                     override fun onAvailable(network: Network) {
-                        // Android explicitly recommends waiting for onCapabilitiesChanged
-                        // instead of synchronously querying capabilities from here.
                         currentDefaultNetwork = network
                     }
 
@@ -248,6 +273,7 @@ class ConnectivityAndInternetAccess private constructor(
     class Builder {
         private var hosts: List<String> = DEFAULT_HOSTS
         private var dnsResolvers: List<String> = DEFAULT_DNS_RESOLVERS
+        private var icmpTargets: List<String> = DEFAULT_ICMP_TARGETS
         private var dnsStrategy: DnsProbeStrategy = DefaultDnsProbe()
         private var httpStrategy: HttpProbeStrategy = DefaultHttpProbe()
 
@@ -257,6 +283,14 @@ class ConnectivityAndInternetAccess private constructor(
 
         fun setDnsResolvers(resolvers: List<String>) = apply {
             this.dnsResolvers = resolvers
+        }
+
+        /**
+         * Configures targets used only by the explicit ICMP diagnostic.
+         * Defaults to 1.1.1.1 followed by 8.8.8.8.
+         */
+        fun setIcmpTargets(targets: List<String>) = apply {
+            this.icmpTargets = targets
         }
 
         fun setDnsProbeStrategy(strategy: DnsProbeStrategy) = apply {
@@ -271,11 +305,10 @@ class ConnectivityAndInternetAccess private constructor(
             normalizeHosts(hosts),
             normalizeDnsResolvers(dnsResolvers),
             dnsStrategy,
-            httpStrategy
+            httpStrategy,
+            normalizeIcmpTargets(icmpTargets)
         )
     }
-
-    // Instance API: preferred for new code.
 
     fun checkInternetAsync(
         context: Context,
@@ -297,6 +330,20 @@ class ConnectivityAndInternetAccess private constructor(
         instanceHttpStrategy
     )
 
+    /**
+     * Runs an optional ICMP diagnostic off the caller thread.
+     *
+     * This does not participate in checkInternetAsync(). A false result must not
+     * be interpreted as "offline". The spawned ping process follows the OS routing
+     * decision and cannot be bound to an Android Network like the DNS/HTTP probes.
+     */
+    fun checkIcmpReachabilityAsync(callback: IcmpCallback): Request =
+        executeIcmpAsync(instanceIcmpTargets, callback)
+
+    /** Blocking ICMP counterpart. Do not call this from the main thread. */
+    fun checkIcmpReachabilityBlocking(): IcmpResult =
+        executeIcmpBlocking(instanceIcmpTargets)
+
     companion object {
         private const val MINIMUM_FAST_KBPS = 3_072
         private const val CONNECT_TIMEOUT_MS = 800
@@ -306,6 +353,10 @@ class ConnectivityAndInternetAccess private constructor(
         private const val DNS_STAGE_TIMEOUT_MS = 700L
         private const val TOTAL_PROBE_TIMEOUT_MS = 2_000L
         private const val MAX_PARALLEL_PROBES = 9
+        private const val ICMP_ATTEMPT_TIMEOUT_MS = 800L
+        private const val ICMP_TOTAL_TIMEOUT_MS = 1_500L
+        private const val ICMP_POLL_INTERVAL_MS = 25L
+        private const val PING_BINARY = "/system/bin/ping"
         private const val DNS_PORT = 53
         private const val CONNECTION_ATTEMPT_TIMEOUT_MS = 30_000L
         private const val DNS_QUERY_NAME = "example.com"
@@ -325,6 +376,15 @@ class ConnectivityAndInternetAccess private constructor(
             "https://www.amazon.com/"
         )
 
+        /**
+         * Numeric addresses avoid requiring forward DNS merely to start the
+         * built-in IP/ICMP diagnostic.
+         */
+        private val DEFAULT_ICMP_TARGETS = listOf(
+            "1.1.1.1",
+            "8.8.8.8"
+        )
+
         @Volatile
         private var globalHosts: List<String> = DEFAULT_HOSTS
 
@@ -340,6 +400,8 @@ class ConnectivityAndInternetAccess private constructor(
         private val connectionAttemptLock = Any()
         private val connectionAttemptQueue = ArrayDeque<ConnectionAttempt>()
         private val connectionAttempts = AtomicInteger(0)
+        private val connectionAttemptStalled = AtomicBoolean(false)
+        private var legacyConnectingSinceElapsedRealtime = -1L
         private val dnsTransactionId = AtomicInteger(System.nanoTime().toInt())
         private val probeThreadNumber = AtomicInteger(0)
 
@@ -387,32 +449,77 @@ class ConnectivityAndInternetAccess private constructor(
             }
 
             if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P) {
-                if (legacyNetworks(manager(context)).any { info ->
-                        info != null &&
-                            info.isAvailable &&
-                            info.state == NetworkInfo.State.CONNECTING
-                    }
-                ) {
+                val legacyConnecting = isLegacyConnecting(manager(context))
+                updateLegacyConnectingStallState(legacyConnecting)
+                if (legacyConnecting) {
                     return true
                 }
             }
 
+            expireTimedOutConnectionAttempts()
             return connectionAttempts.get() > 0
+        }
+
+        /**
+         * Returns true when a connection attempt has remained unresolved for at
+         * least [CONNECTION_ATTEMPT_TIMEOUT_MS].
+         *
+         * API 29+ uses attempts registered with [beginConnectionAttempt]. API
+         * 16-28 also times the legacy CONNECTING state from its first observation
+         * by this helper or [isConnecting].
+         */
+        @JvmStatic
+        fun isConnectionAttemptStalled(context: Context?): Boolean {
+            context ?: throw IllegalArgumentException("context == null")
+
+            if (isConnected(context)) {
+                return false
+            }
+
+            expireTimedOutConnectionAttempts()
+            if (connectionAttemptStalled.get()) {
+                return true
+            }
+
+            return if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P) {
+                updateLegacyConnectingStallState(
+                    isLegacyConnecting(manager(context))
+                )
+            } else {
+                false
+            }
+        }
+
+        @JvmStatic
+        fun clearConnectionAttemptStall() {
+            synchronized(connectionAttemptLock) {
+                connectionAttemptStalled.set(false)
+                legacyConnectingSinceElapsedRealtime = -1L
+            }
         }
 
         @JvmStatic
         fun beginConnectionAttempt(context: Context) {
-            // Keep the context parameter for API compatibility and its non-null contract.
-            context.applicationContext
-
-            val attempt = ConnectionAttempt()
+            val safeContext = context.applicationContext ?: context
+            val attempt: ConnectionAttempt
             synchronized(connectionAttemptLock) {
+                if (connectionAttempts.get() == 0) {
+                    connectionAttemptStalled.set(false)
+                    legacyConnectingSinceElapsedRealtime = -1L
+                }
+                // Timestamp at enqueue time so queue order and timeout order cannot
+                // diverge when several callers begin attempts concurrently.
+                attempt = ConnectionAttempt(SystemClock.elapsedRealtime())
                 connectionAttemptQueue.addLast(attempt)
                 connectionAttempts.incrementAndGet()
             }
 
             mainHandler.postDelayed(
-                { closeConnectionAttempt(attempt) },
+                {
+                    if (!isConnected(safeContext)) {
+                        timeoutConnectionAttempt(attempt)
+                    }
+                },
                 CONNECTION_ATTEMPT_TIMEOUT_MS
             )
         }
@@ -452,6 +559,7 @@ class ConnectivityAndInternetAccess private constructor(
                 }
             }
 
+            expireTimedOutConnectionAttempts()
             return connectionAttempts.get() > 0
         }
 
@@ -799,10 +907,148 @@ class ConnectivityAndInternetAccess private constructor(
         )
 
         @JvmStatic
+        fun checkIcmpReachabilityAsyncDefault(
+            callback: IcmpCallback
+        ): Request = executeIcmpAsync(DEFAULT_ICMP_TARGETS, callback)
+
+        @JvmStatic
+        fun checkIcmpReachabilityBlockingDefault(): IcmpResult =
+            executeIcmpBlocking(DEFAULT_ICMP_TARGETS)
+
+        @JvmStatic
         fun defaultHosts(): List<String> = DEFAULT_HOSTS
 
         @JvmStatic
         fun defaultDnsResolvers(): List<String> = DEFAULT_DNS_RESOLVERS
+
+        @JvmStatic
+        fun defaultIcmpTargets(): List<String> = DEFAULT_ICMP_TARGETS
+
+        private fun executeIcmpAsync(
+            targets: List<String>,
+            callback: IcmpCallback
+        ): Request {
+            val normalizedTargets = normalizeIcmpTargets(targets)
+            val request = Request()
+
+            request.attach(
+                executor.submit {
+                    val result = executeIcmpBlocking(normalizedTargets)
+                    if (!request.isCancelled()) {
+                        mainHandler.post {
+                            if (!request.isCancelled()) {
+                                callback.onResult(result)
+                            }
+                        }
+                    }
+                }
+            )
+
+            return request
+        }
+
+        private fun executeIcmpBlocking(targets: List<String>): IcmpResult {
+            val started = SystemClock.elapsedRealtime()
+            val deadline = started + ICMP_TOTAL_TIMEOUT_MS
+            val attempted = mutableListOf<String>()
+
+            for (target in normalizeIcmpTargets(targets)) {
+                if (Thread.currentThread().isInterrupted ||
+                    SystemClock.elapsedRealtime() >= deadline
+                ) {
+                    break
+                }
+
+                attempted += target
+                val attemptDeadline = minOf(
+                    deadline,
+                    SystemClock.elapsedRealtime() + ICMP_ATTEMPT_TIMEOUT_MS
+                )
+
+                if (checkIcmpTarget(target, attemptDeadline)) {
+                    return IcmpResult(
+                        reachable = true,
+                        reachedAddress = target,
+                        attemptedAddresses = attempted.toList(),
+                        elapsedMilliseconds =
+                            SystemClock.elapsedRealtime() - started
+                    )
+                }
+            }
+
+            return IcmpResult(
+                reachable = false,
+                reachedAddress = null,
+                attemptedAddresses = attempted.toList(),
+                elapsedMilliseconds = SystemClock.elapsedRealtime() - started
+            )
+        }
+
+        private fun checkIcmpTarget(target: String, deadline: Long): Boolean {
+            var process: Process? = null
+
+            return try {
+                process = startPingProcess(target)
+
+                // ping never needs stdin.
+                process.outputStream.closeQuietly()
+
+                while (!Thread.currentThread().isInterrupted) {
+                    try {
+                        return process.exitValue() == 0
+                    } catch (_: IllegalThreadStateException) {
+                        // Still running; enforce an API-16-safe deadline ourselves.
+                    }
+
+                    val remaining = deadline - SystemClock.elapsedRealtime()
+                    if (remaining <= 0) {
+                        return false
+                    }
+
+                    try {
+                        Thread.sleep(minOf(ICMP_POLL_INTERVAL_MS, remaining))
+                    } catch (_: InterruptedException) {
+                        Thread.currentThread().interrupt()
+                        return false
+                    }
+                }
+
+                false
+            } catch (_: IOException) {
+                false
+            } catch (_: RuntimeException) {
+                false
+            } finally {
+                process?.let { running ->
+                    try {
+                        running.destroy()
+                    } catch (_: RuntimeException) {
+                        // Best-effort teardown on unusual OEM implementations.
+                    }
+
+                    running.inputStream.closeQuietly()
+                    running.errorStream.closeQuietly()
+                    running.outputStream.closeQuietly()
+                }
+            }
+        }
+
+        private fun startPingProcess(target: String): Process =
+            try {
+                ProcessBuilder(PING_BINARY, "-c", "1", target)
+                    .redirectErrorStream(true)
+                    .start()
+            } catch (primaryFailure: IOException) {
+                try {
+                    ProcessBuilder("ping", "-c", "1", target)
+                        .redirectErrorStream(true)
+                        .start()
+                } catch (fallbackFailure: IOException) {
+                    // Keep the fallback path compatible with Android API 16-18;
+                    // the suppressed-exception API is not available there.
+                    throw fallbackFailure
+                }
+            }
 
         private fun executeAsync(
             context: Context,
@@ -1345,6 +1591,34 @@ class ConnectivityAndInternetAccess private constructor(
         private fun NetworkInfo?.isConnectedLegacy(): Boolean =
             this != null && isAvailable && isConnected
 
+        private fun isLegacyConnecting(
+            connectivityManager: ConnectivityManager
+        ): Boolean = legacyNetworks(connectivityManager).any { info ->
+            info != null &&
+                info.isAvailable &&
+                info.state == NetworkInfo.State.CONNECTING
+        }
+
+        private fun updateLegacyConnectingStallState(
+            connecting: Boolean
+        ): Boolean {
+            synchronized(connectionAttemptLock) {
+                if (!connecting) {
+                    legacyConnectingSinceElapsedRealtime = -1L
+                    return false
+                }
+
+                val now = SystemClock.elapsedRealtime()
+                if (legacyConnectingSinceElapsedRealtime < 0L) {
+                    legacyConnectingSinceElapsedRealtime = now
+                    return false
+                }
+
+                return now - legacyConnectingSinceElapsedRealtime >=
+                    CONNECTION_ATTEMPT_TIMEOUT_MS
+            }
+        }
+
         private fun isConnectionFast(type: Int, subType: Int): Boolean {
             if (type == ConnectivityManager.TYPE_WIFI ||
                 type == ConnectivityManager.TYPE_ETHERNET
@@ -1392,6 +1666,33 @@ class ConnectivityAndInternetAccess private constructor(
             return connectivityManager.allNetworks.firstOrNull { network ->
                 connectivityManager.getNetworkCapabilities(network).isUsable()
             }
+        }
+
+        private fun normalizeIcmpTargets(targets: List<String>): List<String> {
+            val normalized = LinkedHashSet<String>()
+
+            for (raw in targets) {
+                val value = raw.trim()
+                if (value.isEmpty()) {
+                    continue
+                }
+
+                /*
+                 * ProcessBuilder already avoids shell injection. Validation also
+                 * rejects option-looking values and command/path punctuation while
+                 * retaining IPv4, IPv6 zone identifiers and ordinary host names.
+                 */
+                require(
+                    !value.startsWith("-") &&
+                        value.matches(Regex("[A-Za-z0-9._:%-]+"))
+                ) {
+                    "Invalid ICMP target: $value"
+                }
+
+                normalized += value
+            }
+
+            return normalized.toList()
         }
 
         private fun normalizeHosts(hosts: List<String>): List<String> {
@@ -1514,6 +1815,18 @@ class ConnectivityAndInternetAccess private constructor(
             return port
         }
 
+        private fun Closeable?.closeQuietly() {
+            if (this == null) {
+                return
+            }
+
+            try {
+                close()
+            } catch (_: IOException) {
+                // Best-effort process-stream cleanup.
+            }
+        }
+
         private fun newProbeExecutor(): ExecutorService =
             Executors.newFixedThreadPool(
                 MAX_PARALLEL_PROBES,
@@ -1527,7 +1840,7 @@ class ConnectivityAndInternetAccess private constructor(
                 }
             )
 
-        private fun closeConnectionAttempt(attempt: ConnectionAttempt): Boolean {
+        private fun timeoutConnectionAttempt(attempt: ConnectionAttempt): Boolean {
             synchronized(connectionAttemptLock) {
                 if (attempt.closed) {
                     return false
@@ -1538,7 +1851,35 @@ class ConnectivityAndInternetAccess private constructor(
                 connectionAttempts.updateAndGet { value ->
                     if (value > 0) value - 1 else 0
                 }
+                connectionAttemptStalled.set(true)
                 return true
+            }
+        }
+
+        private fun expireTimedOutConnectionAttempts() {
+            val now = SystemClock.elapsedRealtime()
+
+            synchronized(connectionAttemptLock) {
+                while (connectionAttemptQueue.isNotEmpty()) {
+                    val attempt = connectionAttemptQueue.first()
+                    if (attempt.closed) {
+                        connectionAttemptQueue.removeFirst()
+                        continue
+                    }
+                    if (
+                        now - attempt.startedAtElapsedRealtime <
+                        CONNECTION_ATTEMPT_TIMEOUT_MS
+                    ) {
+                        break
+                    }
+
+                    attempt.closed = true
+                    connectionAttemptQueue.removeFirst()
+                    connectionAttempts.updateAndGet { value ->
+                        if (value > 0) value - 1 else 0
+                    }
+                    connectionAttemptStalled.set(true)
+                }
             }
         }
 
@@ -1549,6 +1890,8 @@ class ConnectivityAndInternetAccess private constructor(
                 }
                 connectionAttemptQueue.clear()
                 connectionAttempts.set(0)
+                connectionAttemptStalled.set(false)
+                legacyConnectingSinceElapsedRealtime = -1L
             }
         }
 
@@ -1562,7 +1905,9 @@ class ConnectivityAndInternetAccess private constructor(
             val port: Int
         )
 
-        private class ConnectionAttempt {
+        private class ConnectionAttempt(
+            val startedAtElapsedRealtime: Long
+        ) {
             var closed: Boolean = false
         }
 
@@ -1632,3 +1977,4 @@ class ConnectivityAndInternetAccess private constructor(
         }
     }
 }
+
