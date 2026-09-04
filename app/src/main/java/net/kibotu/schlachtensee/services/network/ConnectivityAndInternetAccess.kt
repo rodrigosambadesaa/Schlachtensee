@@ -55,8 +55,14 @@ import javax.net.ssl.SSLSocketFactory
 class ConnectivityAndInternetAccess private constructor(
     private val instanceHosts: List<String>,
     private val instanceResolvers: List<String>,
+    private val instanceTcpTargets: List<String>,
+    private val instanceNtpTargets: List<String>,
+    private val instanceTlsTargets: List<String>,
     private val instanceDnsStrategy: DnsProbeStrategy,
     private val instanceHttpStrategy: HttpProbeStrategy,
+    private val instanceTcpStrategy: TcpProbeStrategy,
+    private val instanceNtpStrategy: NtpProbeStrategy,
+    private val instanceTlsStrategy: TlsProbeStrategy,
     private val instanceIcmpTargets: List<String>
 ) {
 
@@ -67,8 +73,14 @@ class ConnectivityAndInternetAccess private constructor(
     constructor(hosts: ArrayList<String>) : this(
         normalizeHosts(hosts),
         DEFAULT_DNS_RESOLVERS,
+        DEFAULT_TCP_TARGETS,
+        DEFAULT_NTP_TARGETS,
+        DEFAULT_TLS_TARGETS,
         DefaultDnsProbe(),
         DefaultHttpProbe(),
+        DefaultTcpProbe(),
+        DefaultNtpProbe(),
+        DefaultTlsProbe(),
         DEFAULT_ICMP_TARGETS
     ) {
         globalHosts = instanceHosts
@@ -80,6 +92,18 @@ class ConnectivityAndInternetAccess private constructor(
 
     fun interface HttpProbeStrategy {
         fun checkHttp(address: String, network: Network?): Boolean
+    }
+
+    fun interface TcpProbeStrategy {
+        fun checkTcp(host: String, port: Int, network: Network?): Boolean
+    }
+
+    fun interface NtpProbeStrategy {
+        fun checkNtp(host: String, network: Network?): Boolean
+    }
+
+    fun interface TlsProbeStrategy {
+        fun checkTls(host: String, port: Int, network: Network?): Boolean
     }
 
     fun interface InternetCallback {
@@ -193,6 +217,8 @@ class ConnectivityAndInternetAccess private constructor(
                     private var currentDefaultNetwork: Network? = null
 
                     override fun onAvailable(network: Network) {
+                        // Android explicitly recommends waiting for onCapabilitiesChanged
+                        // instead of synchronously querying capabilities from here.
                         currentDefaultNetwork = network
                     }
 
@@ -273,9 +299,15 @@ class ConnectivityAndInternetAccess private constructor(
     class Builder {
         private var hosts: List<String> = DEFAULT_HOSTS
         private var dnsResolvers: List<String> = DEFAULT_DNS_RESOLVERS
+        private var tcpTargets: List<String> = DEFAULT_TCP_TARGETS
+        private var ntpTargets: List<String> = DEFAULT_NTP_TARGETS
+        private var tlsTargets: List<String> = DEFAULT_TLS_TARGETS
         private var icmpTargets: List<String> = DEFAULT_ICMP_TARGETS
         private var dnsStrategy: DnsProbeStrategy = DefaultDnsProbe()
         private var httpStrategy: HttpProbeStrategy = DefaultHttpProbe()
+        private var tcpStrategy: TcpProbeStrategy = DefaultTcpProbe()
+        private var ntpStrategy: NtpProbeStrategy = DefaultNtpProbe()
+        private var tlsStrategy: TlsProbeStrategy = DefaultTlsProbe()
 
         fun setHosts(hosts: List<String>) = apply {
             this.hosts = hosts
@@ -285,9 +317,21 @@ class ConnectivityAndInternetAccess private constructor(
             this.dnsResolvers = resolvers
         }
 
+        fun setTcpTargets(targets: List<String>) = apply {
+            this.tcpTargets = targets
+        }
+
+        fun setNtpTargets(targets: List<String>) = apply {
+            this.ntpTargets = targets
+        }
+
+        fun setTlsTargets(targets: List<String>) = apply {
+            this.tlsTargets = targets
+        }
+
         /**
          * Configures targets used only by the explicit ICMP diagnostic.
-         * Defaults to 1.1.1.1 followed by 8.8.8.8.
+         * Defaults to 1.1.1.1, 8.8.8.8, and the Cloudflare IPv6 resolver address.
          */
         fun setIcmpTargets(targets: List<String>) = apply {
             this.icmpTargets = targets
@@ -301,14 +345,34 @@ class ConnectivityAndInternetAccess private constructor(
             this.httpStrategy = strategy
         }
 
+        fun setTcpProbeStrategy(strategy: TcpProbeStrategy) = apply {
+            this.tcpStrategy = strategy
+        }
+
+        fun setNtpProbeStrategy(strategy: NtpProbeStrategy) = apply {
+            this.ntpStrategy = strategy
+        }
+
+        fun setTlsProbeStrategy(strategy: TlsProbeStrategy) = apply {
+            this.tlsStrategy = strategy
+        }
+
         fun build(): ConnectivityAndInternetAccess = ConnectivityAndInternetAccess(
             normalizeHosts(hosts),
             normalizeDnsResolvers(dnsResolvers),
+            normalizeEndpointTargets(tcpTargets, HTTPS_PORT, "tcpTargets"),
+            normalizeNtpTargets(ntpTargets),
+            normalizeEndpointTargets(tlsTargets, HTTPS_PORT, "tlsTargets"),
             dnsStrategy,
             httpStrategy,
+            tcpStrategy,
+            ntpStrategy,
+            tlsStrategy,
             normalizeIcmpTargets(icmpTargets)
         )
     }
+
+    // Instance API: preferred for new code.
 
     fun checkInternetAsync(
         context: Context,
@@ -317,8 +381,14 @@ class ConnectivityAndInternetAccess private constructor(
         context,
         instanceResolvers,
         instanceHosts,
+        instanceTcpTargets,
+        instanceNtpTargets,
+        instanceTlsTargets,
         instanceDnsStrategy,
         instanceHttpStrategy,
+        instanceTcpStrategy,
+        instanceNtpStrategy,
+        instanceTlsStrategy,
         callback
     )
 
@@ -326,8 +396,14 @@ class ConnectivityAndInternetAccess private constructor(
         context,
         instanceResolvers,
         instanceHosts,
+        instanceTcpTargets,
+        instanceNtpTargets,
+        instanceTlsTargets,
         instanceDnsStrategy,
-        instanceHttpStrategy
+        instanceHttpStrategy,
+        instanceTcpStrategy,
+        instanceNtpStrategy,
+        instanceTlsStrategy
     )
 
     /**
@@ -346,18 +422,20 @@ class ConnectivityAndInternetAccess private constructor(
 
     companion object {
         private const val MINIMUM_FAST_KBPS = 3_072
-        private const val CONNECT_TIMEOUT_MS = 800
-        private const val READ_TIMEOUT_MS = 800
-        private const val DNS_TIMEOUT_MS = 650
-        private const val EFFECTIVE_DNS_STAGE_TIMEOUT_MS = 350L
-        private const val DNS_STAGE_TIMEOUT_MS = 700L
-        private const val TOTAL_PROBE_TIMEOUT_MS = 2_000L
-        private const val MAX_PARALLEL_PROBES = 9
+        private const val CONNECT_TIMEOUT_MS = 3_000
+        private const val READ_TIMEOUT_MS = 3_000
+        private const val DNS_TIMEOUT_MS = 2_500
+        private const val EFFECTIVE_DNS_STAGE_TIMEOUT_MS = 1_500L
+        private const val DNS_STAGE_TIMEOUT_MS = 3_500L
+        private const val TOTAL_PROBE_TIMEOUT_MS = 6_000L
+        private const val MAX_PARALLEL_PROBES = 16
         private const val ICMP_ATTEMPT_TIMEOUT_MS = 800L
         private const val ICMP_TOTAL_TIMEOUT_MS = 1_500L
         private const val ICMP_POLL_INTERVAL_MS = 25L
         private const val PING_BINARY = "/system/bin/ping"
         private const val DNS_PORT = 53
+        private const val NTP_PORT = 123
+        private const val HTTPS_PORT = 443
         private const val CONNECTION_ATTEMPT_TIMEOUT_MS = 30_000L
         private const val DNS_QUERY_NAME = "example.com"
 
@@ -365,7 +443,8 @@ class ConnectivityAndInternetAccess private constructor(
             "1.1.1.1",
             "8.8.8.8",
             "9.9.9.9",
-            "208.67.222.222"
+            "208.67.222.222",
+            "[2606:4700:4700::1111]"
         )
 
         private val DEFAULT_HOSTS = listOf(
@@ -380,9 +459,26 @@ class ConnectivityAndInternetAccess private constructor(
          * Numeric addresses avoid requiring forward DNS merely to start the
          * built-in IP/ICMP diagnostic.
          */
+        private val DEFAULT_TCP_TARGETS = listOf(
+            "1.1.1.1:53",
+            "8.8.8.8:443",
+            "[2606:4700:4700::1111]:53"
+        )
+
+        private val DEFAULT_NTP_TARGETS = listOf(
+            "time.google.com",
+            "pool.ntp.org"
+        )
+
+        private val DEFAULT_TLS_TARGETS = listOf(
+            "www.google.com:443",
+            "cloudflare.com:443"
+        )
+
         private val DEFAULT_ICMP_TARGETS = listOf(
             "1.1.1.1",
-            "8.8.8.8"
+            "8.8.8.8",
+            "[2606:4700:4700::1111]"
         )
 
         @Volatile
@@ -392,11 +488,28 @@ class ConnectivityAndInternetAccess private constructor(
         private var globalResolvers: List<String> = DEFAULT_DNS_RESOLVERS
 
         @Volatile
+        private var globalTcpTargets: List<String> = DEFAULT_TCP_TARGETS
+
+        @Volatile
+        private var globalNtpTargets: List<String> = DEFAULT_NTP_TARGETS
+
+        @Volatile
+        private var globalTlsTargets: List<String> = DEFAULT_TLS_TARGETS
+
+        @Volatile
         private var globalDnsStrategy: DnsProbeStrategy = DefaultDnsProbe()
 
         @Volatile
         private var globalHttpStrategy: HttpProbeStrategy = DefaultHttpProbe()
 
+        @Volatile
+        private var globalTcpStrategy: TcpProbeStrategy = DefaultTcpProbe()
+
+        @Volatile
+        private var globalNtpStrategy: NtpProbeStrategy = DefaultNtpProbe()
+
+        @Volatile
+        private var globalTlsStrategy: TlsProbeStrategy = DefaultTlsProbe()
         private val connectionAttemptLock = Any()
         private val connectionAttemptQueue = ArrayDeque<ConnectionAttempt>()
         private val connectionAttempts = AtomicInteger(0)
@@ -421,6 +534,9 @@ class ConnectivityAndInternetAccess private constructor(
         @JvmStatic
         fun strictCaptivePortalBuilder(): Builder = Builder()
             .setDnsResolvers(emptyList())
+            .setTcpTargets(emptyList())
+            .setNtpTargets(emptyList())
+            .setTlsTargets(emptyList())
             .setHosts(
                 listOf("https://connectivitycheck.gstatic.com/generate_204")
             )
@@ -443,11 +559,9 @@ class ConnectivityAndInternetAccess private constructor(
         @JvmStatic
         fun isConnecting(context: Context?): Boolean {
             context ?: throw IllegalArgumentException("context == null")
-
             if (isConnected(context)) {
                 return false
             }
-
             if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P) {
                 val legacyConnecting = isLegacyConnecting(manager(context))
                 updateLegacyConnectingStallState(legacyConnecting)
@@ -455,11 +569,9 @@ class ConnectivityAndInternetAccess private constructor(
                     return true
                 }
             }
-
             expireTimedOutConnectionAttempts()
             return connectionAttempts.get() > 0
         }
-
         /**
          * Returns true when a connection attempt has remained unresolved for at
          * least [CONNECTION_ATTEMPT_TIMEOUT_MS].
@@ -501,19 +613,14 @@ class ConnectivityAndInternetAccess private constructor(
         @JvmStatic
         fun beginConnectionAttempt(context: Context) {
             val safeContext = context.applicationContext ?: context
-            val attempt: ConnectionAttempt
+            val attempt = ConnectionAttempt(SystemClock.elapsedRealtime())
             synchronized(connectionAttemptLock) {
                 if (connectionAttempts.get() == 0) {
                     connectionAttemptStalled.set(false)
-                    legacyConnectingSinceElapsedRealtime = -1L
                 }
-                // Timestamp at enqueue time so queue order and timeout order cannot
-                // diverge when several callers begin attempts concurrently.
-                attempt = ConnectionAttempt(SystemClock.elapsedRealtime())
                 connectionAttemptQueue.addLast(attempt)
                 connectionAttempts.incrementAndGet()
             }
-
             mainHandler.postDelayed(
                 {
                     if (!isConnected(safeContext)) {
@@ -559,7 +666,6 @@ class ConnectivityAndInternetAccess private constructor(
                 }
             }
 
-            expireTimedOutConnectionAttempts()
             return connectionAttempts.get() > 0
         }
 
@@ -808,8 +914,14 @@ class ConnectivityAndInternetAccess private constructor(
                 context,
                 globalResolvers,
                 globalHosts,
+                globalTcpTargets,
+                globalNtpTargets,
+                globalTlsTargets,
                 globalDnsStrategy,
-                globalHttpStrategy
+                globalHttpStrategy,
+                globalTcpStrategy,
+                globalNtpStrategy,
+                globalTlsStrategy
             ).reachable
         }
 
@@ -823,8 +935,14 @@ class ConnectivityAndInternetAccess private constructor(
                 context,
                 globalResolvers,
                 normalizeHosts(hosts),
+                globalTcpTargets,
+                globalNtpTargets,
+                globalTlsTargets,
                 globalDnsStrategy,
-                globalHttpStrategy
+                globalHttpStrategy,
+                globalTcpStrategy,
+                globalNtpStrategy,
+                globalTlsStrategy
             ).reachable
         }
 
@@ -836,8 +954,14 @@ class ConnectivityAndInternetAccess private constructor(
             context,
             globalResolvers,
             globalHosts,
+            globalTcpTargets,
+            globalNtpTargets,
+            globalTlsTargets,
             globalDnsStrategy,
             globalHttpStrategy,
+            globalTcpStrategy,
+            globalNtpStrategy,
+            globalTlsStrategy,
             callback
         )
 
@@ -850,8 +974,14 @@ class ConnectivityAndInternetAccess private constructor(
             context,
             globalResolvers,
             hosts,
+            globalTcpTargets,
+            globalNtpTargets,
+            globalTlsTargets,
             globalDnsStrategy,
             globalHttpStrategy,
+            globalTcpStrategy,
+            globalNtpStrategy,
+            globalTlsStrategy,
             callback
         )
 
@@ -865,8 +995,14 @@ class ConnectivityAndInternetAccess private constructor(
             context,
             dnsResolvers,
             hosts,
+            globalTcpTargets,
+            globalNtpTargets,
+            globalTlsTargets,
             globalDnsStrategy,
             globalHttpStrategy,
+            globalTcpStrategy,
+            globalNtpStrategy,
+            globalTlsStrategy,
             callback
         )
 
@@ -877,8 +1013,14 @@ class ConnectivityAndInternetAccess private constructor(
             context,
             globalResolvers,
             globalHosts,
+            globalTcpTargets,
+            globalNtpTargets,
+            globalTlsTargets,
             globalDnsStrategy,
-            globalHttpStrategy
+            globalHttpStrategy,
+            globalTcpStrategy,
+            globalNtpStrategy,
+            globalTlsStrategy
         )
 
         @JvmStatic
@@ -889,8 +1031,14 @@ class ConnectivityAndInternetAccess private constructor(
             context,
             globalResolvers,
             hosts,
+            globalTcpTargets,
+            globalNtpTargets,
+            globalTlsTargets,
             globalDnsStrategy,
-            globalHttpStrategy
+            globalHttpStrategy,
+            globalTcpStrategy,
+            globalNtpStrategy,
+            globalTlsStrategy
         )
 
         @JvmStatic
@@ -902,8 +1050,14 @@ class ConnectivityAndInternetAccess private constructor(
             context,
             dnsResolvers,
             hosts,
+            globalTcpTargets,
+            globalNtpTargets,
+            globalTlsTargets,
             globalDnsStrategy,
-            globalHttpStrategy
+            globalHttpStrategy,
+            globalTcpStrategy,
+            globalNtpStrategy,
+            globalTlsStrategy
         )
 
         @JvmStatic
@@ -920,6 +1074,15 @@ class ConnectivityAndInternetAccess private constructor(
 
         @JvmStatic
         fun defaultDnsResolvers(): List<String> = DEFAULT_DNS_RESOLVERS
+
+        @JvmStatic
+        fun defaultTcpTargets(): List<String> = DEFAULT_TCP_TARGETS
+
+        @JvmStatic
+        fun defaultNtpTargets(): List<String> = DEFAULT_NTP_TARGETS
+
+        @JvmStatic
+        fun defaultTlsTargets(): List<String> = DEFAULT_TLS_TARGETS
 
         @JvmStatic
         fun defaultIcmpTargets(): List<String> = DEFAULT_ICMP_TARGETS
@@ -1035,17 +1198,15 @@ class ConnectivityAndInternetAccess private constructor(
 
         private fun startPingProcess(target: String): Process =
             try {
-                ProcessBuilder(PING_BINARY, "-c", "1", target)
+                ProcessBuilder(PING_BINARY, "-c", "1", stripAddressBrackets(target))
                     .redirectErrorStream(true)
                     .start()
             } catch (primaryFailure: IOException) {
                 try {
-                    ProcessBuilder("ping", "-c", "1", target)
+                    ProcessBuilder("ping", "-c", "1", stripAddressBrackets(target))
                         .redirectErrorStream(true)
                         .start()
                 } catch (fallbackFailure: IOException) {
-                    // Keep the fallback path compatible with Android API 16-18;
-                    // the suppressed-exception API is not available there.
                     throw fallbackFailure
                 }
             }
@@ -1054,13 +1215,22 @@ class ConnectivityAndInternetAccess private constructor(
             context: Context,
             dnsResolvers: List<String>,
             hosts: List<String>,
+            tcpTargets: List<String>,
+            ntpTargets: List<String>,
+            tlsTargets: List<String>,
             dnsStrategy: DnsProbeStrategy,
             httpStrategy: HttpProbeStrategy,
+            tcpStrategy: TcpProbeStrategy,
+            ntpStrategy: NtpProbeStrategy,
+            tlsStrategy: TlsProbeStrategy,
             callback: InternetCallback
         ): Request {
             val appContext = context.applicationContext ?: context
             val normalizedResolvers = normalizeDnsResolvers(dnsResolvers)
             val normalizedHosts = normalizeHosts(hosts)
+            val normalizedTcpTargets = normalizeEndpointTargets(tcpTargets, HTTPS_PORT, "tcpTargets")
+            val normalizedNtpTargets = normalizeNtpTargets(ntpTargets)
+            val normalizedTlsTargets = normalizeEndpointTargets(tlsTargets, HTTPS_PORT, "tlsTargets")
             val request = Request()
 
             request.attach(
@@ -1069,8 +1239,14 @@ class ConnectivityAndInternetAccess private constructor(
                         appContext,
                         normalizedResolvers,
                         normalizedHosts,
+                        normalizedTcpTargets,
+                        normalizedNtpTargets,
+                        normalizedTlsTargets,
                         dnsStrategy,
-                        httpStrategy
+                        httpStrategy,
+                        tcpStrategy,
+                        ntpStrategy,
+                        tlsStrategy
                     )
 
                     if (!request.isCancelled()) {
@@ -1090,8 +1266,14 @@ class ConnectivityAndInternetAccess private constructor(
             context: Context,
             dnsResolvers: List<String>,
             hosts: List<String>,
+            tcpTargets: List<String>,
+            ntpTargets: List<String>,
+            tlsTargets: List<String>,
             dnsStrategy: DnsProbeStrategy,
-            httpStrategy: HttpProbeStrategy
+            httpStrategy: HttpProbeStrategy,
+            tcpStrategy: TcpProbeStrategy,
+            ntpStrategy: NtpProbeStrategy,
+            tlsStrategy: TlsProbeStrategy
         ): InternetResult {
             val started = SystemClock.elapsedRealtime()
             val deadline = started + TOTAL_PROBE_TIMEOUT_MS
@@ -1101,20 +1283,10 @@ class ConnectivityAndInternetAccess private constructor(
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
                 if (network == null) {
-                    return InternetResult(
-                        false,
-                        null,
-                        attempted.toList(),
-                        SystemClock.elapsedRealtime() - started
-                    )
+                    return InternetResult(false, null, attempted.toList(), SystemClock.elapsedRealtime() - started)
                 }
             } else if (!isConnected(context)) {
-                return InternetResult(
-                    false,
-                    null,
-                    attempted.toList(),
-                    SystemClock.elapsedRealtime() - started
-                )
+                return InternetResult(false, null, attempted.toList(), SystemClock.elapsedRealtime() - started)
             }
 
             val probeExecutor = newProbeExecutor()
@@ -1122,93 +1294,51 @@ class ConnectivityAndInternetAccess private constructor(
                 val normalizedResolvers = normalizeDnsResolvers(dnsResolvers)
                 var reached: String?
 
-                /*
-                 * Prefer the DNS configuration of the selected Android Network before
-                 * contacting public resolvers directly. This respects the effective
-                 * network path (including VPN and Private DNS on modern Android).
-                 *
-                 * An empty resolver list still disables the entire DNS stage, preserving
-                 * the historical Builder semantics and strict captive-portal mode.
-                 * A custom DnsProbeStrategy also owns the DNS stage completely, so the
-                 * built-in effective-DNS preflight is only used with DefaultDnsProbe.
-                 */
-                if (normalizedResolvers.isNotEmpty() &&
-                    dnsStrategy is DefaultDnsProbe
-                ) {
+                if (normalizedResolvers.isNotEmpty() && dnsStrategy is DefaultDnsProbe) {
                     reached = raceProbes(
-                        listOf(
-                            ProbeAttempt(effectiveDnsLabel()) {
-                                checkEffectiveDns(network)
-                            }
-                        ),
+                        listOf(ProbeAttempt(effectiveDnsLabel()) { checkEffectiveDns(network) }),
                         attempted,
-                        minOf(
-                            deadline,
-                            started + EFFECTIVE_DNS_STAGE_TIMEOUT_MS
-                        ),
+                        minOf(deadline, started + EFFECTIVE_DNS_STAGE_TIMEOUT_MS),
                         probeExecutor
                     )
-
-                    if (reached != null) {
-                        return InternetResult(
-                            true,
-                            reached,
-                            attempted.toList(),
-                            SystemClock.elapsedRealtime() - started
-                        )
-                    }
+                    if (reached != null) return InternetResult(true, reached, attempted.toList(), SystemClock.elapsedRealtime() - started)
                 }
 
-                val dnsAttempts = normalizedResolvers.map { resolver ->
-                    ProbeAttempt(dnsEndpointLabel(resolver)) {
+                val transportAttempts = mutableListOf<ProbeAttempt>()
+                normalizeDnsResolvers(dnsResolvers).forEach { resolver ->
+                    transportAttempts += ProbeAttempt(dnsEndpointLabel(resolver)) {
                         dnsStrategy.checkDns(resolver, network)
                     }
                 }
-
-                reached = raceProbes(
-                    dnsAttempts,
-                    attempted,
-                    minOf(deadline, started + DNS_STAGE_TIMEOUT_MS),
-                    probeExecutor
-                )
-
-                if (reached != null) {
-                    return InternetResult(
-                        true,
-                        reached,
-                        attempted.toList(),
-                        SystemClock.elapsedRealtime() - started
-                    )
+                normalizeEndpointTargets(tcpTargets, HTTPS_PORT, "tcpTargets").forEach { target ->
+                    val endpoint = parseEndpoint(target, HTTPS_PORT)
+                    transportAttempts += ProbeAttempt(endpointLabel("tcp", endpoint)) {
+                        tcpStrategy.checkTcp(endpoint.host, endpoint.port, network)
+                    }
                 }
-
-                val hostAttempts = normalizeHosts(hosts).map { host ->
-                    ProbeAttempt(host) {
-                        httpStrategy.checkHttp(host, network)
+                normalizeNtpTargets(ntpTargets).forEach { host ->
+                    transportAttempts += ProbeAttempt("ntp://${formatHost(host)}:$NTP_PORT") {
+                        ntpStrategy.checkNtp(host, network)
                     }
                 }
 
-                reached = raceProbes(
-                    hostAttempts,
-                    attempted,
-                    deadline,
-                    probeExecutor
-                )
+                reached = raceProbes(transportAttempts, attempted, minOf(deadline, started + DNS_STAGE_TIMEOUT_MS), probeExecutor)
+                if (reached != null) return InternetResult(true, reached, attempted.toList(), SystemClock.elapsedRealtime() - started)
 
-                if (reached != null) {
-                    return InternetResult(
-                        true,
-                        reached,
-                        attempted.toList(),
-                        SystemClock.elapsedRealtime() - started
-                    )
+                val applicationAttempts = mutableListOf<ProbeAttempt>()
+                normalizeHosts(hosts).forEach { host ->
+                    applicationAttempts += ProbeAttempt(host) { httpStrategy.checkHttp(host, network) }
+                }
+                normalizeEndpointTargets(tlsTargets, HTTPS_PORT, "tlsTargets").forEach { target ->
+                    val endpoint = parseEndpoint(target, HTTPS_PORT)
+                    applicationAttempts += ProbeAttempt(endpointLabel("tls", endpoint)) {
+                        tlsStrategy.checkTls(endpoint.host, endpoint.port, network)
+                    }
                 }
 
-                return InternetResult(
-                    false,
-                    null,
-                    attempted.toList(),
-                    SystemClock.elapsedRealtime() - started
-                )
+                reached = raceProbes(applicationAttempts, attempted, deadline, probeExecutor)
+                if (reached != null) return InternetResult(true, reached, attempted.toList(), SystemClock.elapsedRealtime() - started)
+                return InternetResult(false, null, attempted.toList(), SystemClock.elapsedRealtime() - started)
             } finally {
                 probeExecutor.shutdownNow()
             }
@@ -1288,9 +1418,100 @@ class ConnectivityAndInternetAccess private constructor(
         private fun effectiveDnsLabel(): String =
             "dns://system/$DNS_QUERY_NAME"
 
+        private fun resolveAddress(host: String, network: Network?): InetAddress {
+            val addresses = if (network != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                network.getAllByName(host)
+            } else {
+                InetAddress.getAllByName(host)
+            }
+            if (addresses.isEmpty()) {
+                throw IOException("No address for $host")
+            }
+            return addresses[0]
+        }
+
+        class DefaultTcpProbe : TcpProbeStrategy {
+            override fun checkTcp(host: String, port: Int, network: Network?): Boolean {
+                var socket: Socket? = null
+                return try {
+                    socket = Socket()
+                    if (network != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                        network.bindSocket(socket)
+                    }
+                    socket.connect(InetSocketAddress(resolveAddress(host, network), port), CONNECT_TIMEOUT_MS)
+                    true
+                } catch (_: IOException) {
+                    false
+                } catch (_: RuntimeException) {
+                    false
+                } finally {
+                    try { socket?.close() } catch (_: IOException) { }
+                }
+            }
+        }
+
+        class DefaultNtpProbe : NtpProbeStrategy {
+            override fun checkNtp(host: String, network: Network?): Boolean {
+                var socket: DatagramSocket? = null
+                return try {
+                    socket = DatagramSocket()
+                    if (network != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP_MR1) {
+                        network.bindSocket(socket)
+                    }
+                    socket.soTimeout = DNS_TIMEOUT_MS
+                    val address = resolveAddress(host, network)
+                    val request = ByteArray(48)
+                    request[0] = 0x1B
+                    socket.send(DatagramPacket(request, request.size, address, NTP_PORT))
+                    val response = DatagramPacket(ByteArray(48), 48)
+                    socket.receive(response)
+                    response.length >= 48
+                } catch (_: IOException) {
+                    false
+                } catch (_: RuntimeException) {
+                    false
+                } finally {
+                    socket?.close()
+                }
+            }
+        }
+
+        class DefaultTlsProbe : TlsProbeStrategy {
+            override fun checkTls(host: String, port: Int, network: Network?): Boolean {
+                var socket: Socket? = null
+                var sslSocket: SSLSocket? = null
+                return try {
+                    socket = Socket()
+                    if (network != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                        network.bindSocket(socket)
+                    }
+                    socket.connect(InetSocketAddress(resolveAddress(host, network), port), CONNECT_TIMEOUT_MS)
+                    socket.soTimeout = READ_TIMEOUT_MS
+                    val factory = tls12SocketFactory ?: (SSLSocketFactory.getDefault() as SSLSocketFactory)
+                    sslSocket = factory.createSocket(socket, host, port, true) as SSLSocket
+                    sslSocket.soTimeout = READ_TIMEOUT_MS
+                    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP &&
+                        sslSocket.supportedProtocols.contains("TLSv1.2")) {
+                        sslSocket.enabledProtocols = arrayOf("TLSv1.2")
+                    }
+                    sslSocket.startHandshake()
+                    true
+                } catch (_: IOException) {
+                    false
+                } catch (_: RuntimeException) {
+                    false
+                } finally {
+                    try { sslSocket?.close() } catch (_: IOException) { }
+                    if (sslSocket == null) {
+                        try { socket?.close() } catch (_: IOException) { }
+                    }
+                }
+            }
+        }
+
         class DefaultDnsProbe : DnsProbeStrategy {
             override fun checkDns(resolver: String, network: Network?): Boolean {
-                val endpoint = parseDnsResolver(resolver)
+                val endpoint = parseEndpoint(resolver, DNS_PORT)
                 var socket: DatagramSocket? = null
 
                 return try {
@@ -1305,7 +1526,7 @@ class ConnectivityAndInternetAccess private constructor(
                     }
 
                     socket.soTimeout = DNS_TIMEOUT_MS
-                    socket.connect(InetSocketAddress(endpoint.host, endpoint.port))
+                    socket.connect(InetSocketAddress(resolveAddress(endpoint.host, network), endpoint.port))
                     socket.send(DatagramPacket(query, query.size))
 
                     val buffer = ByteArray(512)
@@ -1591,34 +1812,6 @@ class ConnectivityAndInternetAccess private constructor(
         private fun NetworkInfo?.isConnectedLegacy(): Boolean =
             this != null && isAvailable && isConnected
 
-        private fun isLegacyConnecting(
-            connectivityManager: ConnectivityManager
-        ): Boolean = legacyNetworks(connectivityManager).any { info ->
-            info != null &&
-                info.isAvailable &&
-                info.state == NetworkInfo.State.CONNECTING
-        }
-
-        private fun updateLegacyConnectingStallState(
-            connecting: Boolean
-        ): Boolean {
-            synchronized(connectionAttemptLock) {
-                if (!connecting) {
-                    legacyConnectingSinceElapsedRealtime = -1L
-                    return false
-                }
-
-                val now = SystemClock.elapsedRealtime()
-                if (legacyConnectingSinceElapsedRealtime < 0L) {
-                    legacyConnectingSinceElapsedRealtime = now
-                    return false
-                }
-
-                return now - legacyConnectingSinceElapsedRealtime >=
-                    CONNECTION_ATTEMPT_TIMEOUT_MS
-            }
-        }
-
         private fun isConnectionFast(type: Int, subType: Int): Boolean {
             if (type == ConnectivityManager.TYPE_WIFI ||
                 type == ConnectivityManager.TYPE_ETHERNET
@@ -1682,9 +1875,12 @@ class ConnectivityAndInternetAccess private constructor(
                  * rejects option-looking values and command/path punctuation while
                  * retaining IPv4, IPv6 zone identifiers and ordinary host names.
                  */
+                val processTarget = stripAddressBrackets(value)
                 require(
                     !value.startsWith("-") &&
-                        value.matches(Regex("[A-Za-z0-9._:%-]+"))
+                        !processTarget.startsWith("-") &&
+                        processTarget.isNotEmpty() &&
+                        processTarget.matches(Regex("[A-Za-z0-9._:%-]+"))
                 ) {
                     "Invalid ICMP target: $value"
                 }
@@ -1728,21 +1924,55 @@ class ConnectivityAndInternetAccess private constructor(
 
         private fun normalizeDnsResolvers(resolvers: List<String>): List<String> {
             val normalized = LinkedHashSet<String>()
-
             for (raw in resolvers) {
                 val value = raw.trim()
                 if (value.isNotEmpty()) {
-                    parseDnsResolver(value)
+                    parseEndpoint(value, DNS_PORT)
                     normalized += value
                 }
             }
+            return normalized.toList()
+        }
 
+        private fun normalizeEndpointTargets(
+            targets: List<String>,
+            defaultPort: Int,
+            argumentName: String
+        ): List<String> {
+            val normalized = LinkedHashSet<String>()
+            for (raw in targets) {
+                val value = raw.trim()
+                if (value.isNotEmpty()) {
+                    try {
+                        parseEndpoint(value, defaultPort)
+                    } catch (error: IllegalArgumentException) {
+                        throw IllegalArgumentException("$argumentName: ${error.message}", error)
+                    }
+                    normalized += value
+                }
+            }
+            return normalized.toList()
+        }
+
+        private fun normalizeNtpTargets(targets: List<String>): List<String> {
+            val normalized = LinkedHashSet<String>()
+            for (raw in targets) {
+                val value = raw.trim()
+                if (value.isEmpty()) {
+                    continue
+                }
+
+                val endpoint = parseEndpoint(value, NTP_PORT)
+                require(endpoint.port == NTP_PORT) {
+                    "NTP target must use port 123: $value"
+                }
+                normalized += endpoint.host
+            }
             return normalized.toList()
         }
 
         private fun isValidURL(address: String?): Boolean {
             address ?: throw IllegalArgumentException("url == null")
-
             return try {
                 val parsed = URL(address)
                 parsed.toURI()
@@ -1754,63 +1984,79 @@ class ConnectivityAndInternetAccess private constructor(
             }
         }
 
-        private fun dnsEndpointLabel(resolver: String): String {
-            val endpoint = parseDnsResolver(resolver)
-            val host = if (':' in endpoint.host) {
-                "[${endpoint.host}]"
+        private fun dnsEndpointLabel(resolver: String): String =
+            endpointLabel("dns", parseEndpoint(resolver, DNS_PORT))
+
+        private fun endpointLabel(scheme: String, endpoint: Endpoint): String =
+            "$scheme://${formatHost(endpoint.host)}:${endpoint.port}"
+
+        private fun formatHost(host: String): String =
+            if (':' in host) "[$host]" else host
+
+        private fun stripAddressBrackets(value: String): String {
+            val trimmed = value.trim()
+            return if (trimmed.startsWith("[") && trimmed.endsWith("]") && trimmed.length > 2) {
+                trimmed.substring(1, trimmed.length - 1)
             } else {
-                endpoint.host
+                trimmed
             }
-            return "dns://$host:${endpoint.port}"
         }
 
-        private fun parseDnsResolver(resolver: String): DnsResolver {
-            val value = resolver.trim()
-            require(value.isNotEmpty()) {
-                "Invalid DNS resolver"
+        private fun parseEndpoint(target: String, defaultPort: Int): Endpoint {
+            require(defaultPort in 1..65_535) {
+                "Invalid default port: $defaultPort"
             }
 
-            var host: String
-            var port = DNS_PORT
+            val value = target.trim()
+            require(value.isNotEmpty()) {
+                "Invalid endpoint"
+            }
+
+            val host: String
+            var port = defaultPort
 
             if (value.startsWith("[")) {
                 val closingBracket = value.indexOf(']')
-                require(closingBracket > 1) {
-                    "Invalid DNS resolver"
+                require(closingBracket > 1 && value.indexOf('[', 1) < 0) {
+                    "Invalid endpoint: $target"
                 }
 
                 host = value.substring(1, closingBracket).trim()
                 val remainder = value.substring(closingBracket + 1).trim()
                 if (remainder.isNotEmpty()) {
-                    require(remainder.startsWith(":")) {
-                        "Invalid DNS resolver"
+                    require(remainder.startsWith(":") && remainder.indexOf(':', 1) < 0) {
+                        "Invalid endpoint: $target"
                     }
                     port = parsePort(remainder.substring(1))
                 }
             } else {
+                require('[' !in value && ']' !in value) {
+                    "Invalid endpoint: $target"
+                }
+
                 val firstColon = value.indexOf(':')
                 val lastColon = value.lastIndexOf(':')
-
-                if (firstColon > 0 && firstColon == lastColon) {
+                if (firstColon >= 0 && firstColon == lastColon) {
                     host = value.substring(0, firstColon).trim()
                     port = parsePort(value.substring(firstColon + 1))
                 } else {
+                    // Multiple colons without brackets are a bare IPv6 literal.
                     host = value
                 }
             }
 
-            require(host.isNotEmpty() && port in 1..65_535) {
-                "Invalid DNS resolver"
+            require(host.isNotEmpty()) {
+                "Invalid endpoint: $target"
             }
 
-            return DnsResolver(host, port)
+            return Endpoint(host, port)
         }
 
         private fun parsePort(rawPort: String): Int {
             val port = rawPort.trim().toIntOrNull()
-                ?: throw IllegalArgumentException("Invalid DNS resolver port")
+                ?: throw IllegalArgumentException("Invalid endpoint port")
             require(port in 1..65_535) {
-                "Invalid DNS resolver port"
+                "Invalid endpoint port"
             }
             return port
         }
@@ -1839,13 +2085,11 @@ class ConnectivityAndInternetAccess private constructor(
                     }
                 }
             )
-
         private fun timeoutConnectionAttempt(attempt: ConnectionAttempt): Boolean {
             synchronized(connectionAttemptLock) {
                 if (attempt.closed) {
                     return false
                 }
-
                 attempt.closed = true
                 connectionAttemptQueue.remove(attempt)
                 connectionAttempts.updateAndGet { value ->
@@ -1855,7 +2099,6 @@ class ConnectivityAndInternetAccess private constructor(
                 return true
             }
         }
-
         private fun expireTimedOutConnectionAttempts() {
             val now = SystemClock.elapsedRealtime()
 
@@ -1883,6 +2126,34 @@ class ConnectivityAndInternetAccess private constructor(
             }
         }
 
+        private fun isLegacyConnecting(
+            connectivityManager: ConnectivityManager
+        ): Boolean = legacyNetworks(connectivityManager).any { info ->
+            info != null &&
+                info.isAvailable &&
+                info.state == NetworkInfo.State.CONNECTING
+        }
+
+        private fun updateLegacyConnectingStallState(
+            connecting: Boolean
+        ): Boolean {
+            synchronized(connectionAttemptLock) {
+                if (!connecting) {
+                    legacyConnectingSinceElapsedRealtime = -1L
+                    return false
+                }
+
+                val now = SystemClock.elapsedRealtime()
+                if (legacyConnectingSinceElapsedRealtime < 0L) {
+                    legacyConnectingSinceElapsedRealtime = now
+                    return false
+                }
+
+                return now - legacyConnectingSinceElapsedRealtime >=
+                    CONNECTION_ATTEMPT_TIMEOUT_MS
+            }
+        }
+
         private fun clearConnectionAttempts() {
             synchronized(connectionAttemptLock) {
                 connectionAttemptQueue.forEach { attempt ->
@@ -1900,11 +2171,10 @@ class ConnectivityAndInternetAccess private constructor(
             val operation: () -> Boolean
         )
 
-        private data class DnsResolver(
+        private data class Endpoint(
             val host: String,
             val port: Int
         )
-
         private class ConnectionAttempt(
             val startedAtElapsedRealtime: Long
         ) {
@@ -1977,4 +2247,3 @@ class ConnectivityAndInternetAccess private constructor(
         }
     }
 }
-
