@@ -638,9 +638,7 @@ class ConnectivityAndInternetAccess private constructor(
                     val attempt = connectionAttemptQueue.removeFirst()
                     if (!attempt.closed) {
                         attempt.closed = true
-                        connectionAttempts.updateAndGet { value ->
-                            if (value > 0) value - 1 else 0
-                        }
+                        decrementConnectionAttempts()
                         return
                     }
                 }
@@ -1807,7 +1805,7 @@ class ConnectivityAndInternetAccess private constructor(
 
         private fun legacyNetworks(
             connectivityManager: ConnectivityManager
-        ): Array<NetworkInfo?> = connectivityManager.allNetworkInfo ?: emptyArray()
+        ): Array<NetworkInfo?> = connectivityManager.allNetworkInfo
 
         private fun NetworkInfo?.isConnectedLegacy(): Boolean =
             this != null && isAvailable && isConnected
@@ -2092,9 +2090,7 @@ class ConnectivityAndInternetAccess private constructor(
                 }
                 attempt.closed = true
                 connectionAttemptQueue.remove(attempt)
-                connectionAttempts.updateAndGet { value ->
-                    if (value > 0) value - 1 else 0
-                }
+                decrementConnectionAttempts()
                 connectionAttemptStalled.set(true)
                 return true
             }
@@ -2118,10 +2114,17 @@ class ConnectivityAndInternetAccess private constructor(
 
                     attempt.closed = true
                     connectionAttemptQueue.removeFirst()
-                    connectionAttempts.updateAndGet { value ->
-                        if (value > 0) value - 1 else 0
-                    }
+                    decrementConnectionAttempts()
                     connectionAttemptStalled.set(true)
+                }
+            }
+        }
+
+        private fun decrementConnectionAttempts() {
+            while (true) {
+                val current = connectionAttempts.get()
+                if (current <= 0 || connectionAttempts.compareAndSet(current, current - 1)) {
+                    return
                 }
             }
         }

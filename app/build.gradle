@@ -141,6 +141,8 @@ android {
 
 dependencies {
 
+    testImplementation testLibs.junit
+
     implementation libs.appCompat
     implementation libs.appCompatResources
     implementation libs.androidKtxCore

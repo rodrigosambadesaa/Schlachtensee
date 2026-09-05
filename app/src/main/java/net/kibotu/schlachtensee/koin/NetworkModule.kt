@@ -3,6 +3,7 @@ package net.kibotu.schlachtensee.koin
 import net.kibotu.resourceextension.resLong
 import net.kibotu.schlachtensee.R
 import net.kibotu.schlachtensee.services.network.AppConnectivityManager
+import net.kibotu.schlachtensee.services.network.ConnectivityInterceptor
 import net.kibotu.schlachtensee.services.network.SchlachtenseeApi
 import okhttp3.OkHttpClient
 import org.koin.dsl.module
@@ -14,18 +15,22 @@ import java.util.concurrent.TimeUnit
 
 
 val remoteDataSourceModule = module {
-    single { createOkHttpClient().build() }
+    single { AppConnectivityManager() }
+    single { createOkHttpClient(get(), get()).build() }
     single {
         createWebService<SchlachtenseeApi>(
             get(),
             "http://jmnberlin.de/"
         )
     }
-    single { AppConnectivityManager() }
 }
 
-private fun createOkHttpClient(): OkHttpClient.Builder = OkHttpClient.Builder()
+private fun createOkHttpClient(
+    context: android.content.Context,
+    connectivityManager: AppConnectivityManager
+): OkHttpClient.Builder = OkHttpClient.Builder()
     .retryOnConnectionFailure(true)
+    .addInterceptor(ConnectivityInterceptor(context, connectivityManager))
     .readTimeout(R.integer.timeoutDurationInSeconds.resLong, TimeUnit.SECONDS)
     .writeTimeout(R.integer.timeoutDurationInSeconds.resLong, TimeUnit.SECONDS)
     .connectTimeout(R.integer.timeoutDurationInSeconds.resLong, TimeUnit.SECONDS)

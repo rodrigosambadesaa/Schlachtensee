@@ -2,6 +2,7 @@ package net.kibotu.schlachtensee.services.network
 
 import android.content.Context
 import net.kibotu.logger.Logger
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * Encapsulates connectivity checking logic for Schlachtensee app.
@@ -14,6 +15,7 @@ class AppConnectivityManager {
 
     companion object {
         const val PRIMARY_APP_HOST = "http://jmnberlin.de/jmn_ajax.php?anfrage=6"
+        private const val DIAGNOSTIC_COOLDOWN_MS = 5_000L
     }
 
     private val appResourceConnectivity: ConnectivityAndInternetAccess =
@@ -23,6 +25,8 @@ class AppConnectivityManager {
 
     private val fallbackExternalConnectivity: ConnectivityAndInternetAccess =
         ConnectivityAndInternetAccess.Builder().build()
+    private val lastDiagnosisStarted = AtomicLong(0L)
+    private val diagnosisInFlight = AtomicLong(0L)
 
     /**
      * Performs an asynchronous internet reachability check.
@@ -61,6 +65,46 @@ class AppConnectivityManager {
     }
 
     /**
+     * Runs the generic diagnostic after a real request failed at the transport
+     * layer. Calls are coalesced briefly so concurrent failures do not create a
+     * burst of active probes.
+     */
+    fun diagnoseGeneralInternetAccess(
+        context: Context,
+        callback: ((ConnectivityAndInternetAccess.InternetResult) -> Unit)? = null
+    ): ConnectivityAndInternetAccess.Request? {
+        val now = android.os.SystemClock.elapsedRealtime()
+        val previous = lastDiagnosisStarted.get()
+        if (now - previous < DIAGNOSTIC_COOLDOWN_MS ||
+            !lastDiagnosisStarted.compareAndSet(previous, now)
+        ) {
+            return null
+        }
+
+        if (!diagnosisInFlight.compareAndSet(0L, 1L)) {
+            return null
+        }
+
+        Logger.w("[Connectivity] Transport failure; starting general Internet diagnostic")
+        return fallbackExternalConnectivity.checkInternetAsync(context) { result ->
+            try {
+                if (result.isReachable()) {
+                    Logger.w(
+                        "[Connectivity] General Internet is reachable via " +
+                            result.reachedHost +
+                            "; the requested service may be unavailable"
+                    )
+                } else {
+                    Logger.w("[Connectivity] General Internet is not reachable")
+                }
+                callback?.invoke(result)
+            } finally {
+                diagnosisInFlight.set(0L)
+            }
+        }
+    }
+
+    /**
      * Observes network state changes passively using Android's ConnectivityManager callbacks.
      */
     fun observeNetwork(
@@ -69,4 +113,5 @@ class AppConnectivityManager {
     ): ConnectivityAndInternetAccess.NetworkObserver {
         return ConnectivityAndInternetAccess.observeNetwork(context, callback)
     }
+
 }

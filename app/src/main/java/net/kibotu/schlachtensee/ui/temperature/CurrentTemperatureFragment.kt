@@ -7,6 +7,7 @@ import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.view.ViewGroup.MarginLayoutParams
+import android.widget.Toast
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.updateLayoutParams
@@ -20,6 +21,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import net.kibotu.logger.Logger
 import net.kibotu.resourceextension.dp
+import net.kibotu.schlachtensee.R
 import net.kibotu.schlachtensee.databinding.FragmentCurrentTemperatureBinding
 import net.kibotu.schlachtensee.extensions.setOnClickListenerThrottled
 import net.kibotu.schlachtensee.services.network.ConnectivityAndInternetAccess
@@ -48,6 +50,13 @@ class CurrentTemperatureFragment : ViewBindingFragment<FragmentCurrentTemperatur
         context?.let { ctx ->
             networkObserver = viewModel.connectivityManager.observeNetwork(ctx) { state ->
                 Logger.d("[NetworkObserver] connected=${state.connected}, validated=${state.internetValidated}, captivePortal=${state.captivePortalDetected}")
+                if (!state.connected) {
+                    Toast.makeText(
+                        ctx,
+                        R.string.network_connection_required,
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
             }
         }
     }
