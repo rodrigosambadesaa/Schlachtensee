@@ -18,7 +18,8 @@ class ConnectivityInterceptor(
 
     override fun intercept(chain: Interceptor.Chain): Response {
         if (!ConnectivityRequestPolicy.shouldStartRequest(
-                ConnectivityAndInternetAccess.isConnected(context)
+                isConnected = ConnectivityAndInternetAccess.isConnected(context),
+                hasPhysicalNetwork = ConnectivityAndInternetAccess.hasPhysicalNetwork(context)
             )
         ) {
             throw NoConnectedNetworkException()
@@ -36,7 +37,10 @@ class ConnectivityInterceptor(
 }
 
 internal object ConnectivityRequestPolicy {
-    fun shouldStartRequest(isConnected: Boolean): Boolean = isConnected
+    fun shouldStartRequest(
+        isConnected: Boolean,
+        hasPhysicalNetwork: Boolean
+    ): Boolean = isConnected && hasPhysicalNetwork
 
     fun shouldDiagnose(error: Throwable): Boolean = error is IOException
 }

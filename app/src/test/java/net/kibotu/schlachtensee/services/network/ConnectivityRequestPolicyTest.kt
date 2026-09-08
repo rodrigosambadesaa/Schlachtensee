@@ -9,8 +9,24 @@ class ConnectivityRequestPolicyTest {
 
     @Test
     fun requestStartsOnlyWithUsableConnectivity() {
-        assertTrue(ConnectivityRequestPolicy.shouldStartRequest(isConnected = true))
-        assertFalse(ConnectivityRequestPolicy.shouldStartRequest(isConnected = false))
+        assertTrue(
+            ConnectivityRequestPolicy.shouldStartRequest(
+                isConnected = true,
+                hasPhysicalNetwork = true
+            )
+        )
+        assertFalse(
+            ConnectivityRequestPolicy.shouldStartRequest(
+                isConnected = true,
+                hasPhysicalNetwork = false
+            )
+        )
+        assertFalse(
+            ConnectivityRequestPolicy.shouldStartRequest(
+                isConnected = false,
+                hasPhysicalNetwork = true
+            )
+        )
     }
 
     @Test
