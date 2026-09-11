@@ -30,6 +30,16 @@ class ConnectivityRequestPolicyTest {
     }
 
     @Test
+    fun vpnOnlyNetworkIsRejectedWhenNoPhysicalNetworkExists() {
+        assertFalse(
+            ConnectivityRequestPolicy.shouldStartRequest(
+                isConnected = true,
+                hasPhysicalNetwork = false
+            )
+        )
+    }
+
+    @Test
     fun onlyTransportFailuresTriggerGeneralDiagnostics() {
         assertTrue(ConnectivityRequestPolicy.shouldDiagnose(IOException()))
         assertFalse(ConnectivityRequestPolicy.shouldDiagnose(IllegalStateException()))
