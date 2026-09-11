@@ -2,6 +2,11 @@
     <string name="app_name">Schlachtensee</string>
     <string name="no_internet_connection_available">No Internet Available</string>
     <string name="network_connection_required">No internet connection is available. Showing offline data.</string>
+    <string name="network_offline">Sin conexión de red.</string>
+    <string name="network_recovered">Conexión recuperada.</string>
+    <string name="network_captive_portal">La red requiere iniciar sesión para acceder a Internet.</string>
+    <string name="internet_unavailable">No se puede acceder a Internet.</string>
+    <string name="backend_unavailable">Hay conexión a Internet, pero el servicio no está disponible.</string>
     <string name="tab_1">Temperature</string>
     <string name="tab_2">Graph</string>
     <string name="tab_3">Map</string>

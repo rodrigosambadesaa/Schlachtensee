@@ -24,6 +24,7 @@ import net.kibotu.resourceextension.dp
 import net.kibotu.schlachtensee.R
 import net.kibotu.schlachtensee.databinding.FragmentCurrentTemperatureBinding
 import net.kibotu.schlachtensee.extensions.setOnClickListenerThrottled
+import net.kibotu.schlachtensee.services.network.AppConnectivityManager
 import net.kibotu.schlachtensee.services.network.ConnectivityAndInternetAccess
 import net.kibotu.schlachtensee.ui.base.ViewBindingFragment
 import net.kibotu.schlachtensee.viewmodels.SchlachtenseeApiViewModel
@@ -44,19 +45,23 @@ class CurrentTemperatureFragment : ViewBindingFragment<FragmentCurrentTemperatur
     private val random by lazy { Random() }
 
     private var networkObserver: ConnectivityAndInternetAccess.NetworkObserver? = null
+    private var lastToastMessage: Int? = null
+    private var previousNetworkConnected: Boolean? = null
 
     override fun onStart() {
         super.onStart()
         context?.let { ctx ->
             networkObserver = viewModel.connectivityManager.observeNetwork(ctx) { state ->
                 Logger.d("[NetworkObserver] connected=${state.connected}, validated=${state.internetValidated}, captivePortal=${state.captivePortalDetected}")
-                if (!state.connected) {
-                    Toast.makeText(
-                        ctx,
-                        R.string.network_connection_required,
-                        Toast.LENGTH_LONG
-                    ).show()
+                val message = when {
+                    state.captivePortalDetected -> R.string.network_captive_portal
+                    previousNetworkConnected == true && !state.connected -> R.string.network_offline
+                    previousNetworkConnected == false && state.connected -> R.string.network_recovered
+                    previousNetworkConnected == null && !state.connected -> R.string.network_offline
+                    else -> null
                 }
+                message?.let(::showConnectivityToast)
+                previousNetworkConnected = state.connected
             }
         }
     }
@@ -70,6 +75,17 @@ class CurrentTemperatureFragment : ViewBindingFragment<FragmentCurrentTemperatur
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
         val binding = requireNotNull(binding)
+
+        viewLifecycleOwner.lifecycleScope.launch {
+            viewModel.connectivityManager.feedback.collectLatest { feedback ->
+                val message = when (feedback) {
+                    AppConnectivityManager.Feedback.NO_NETWORK -> R.string.network_offline
+                    AppConnectivityManager.Feedback.NO_INTERNET -> R.string.internet_unavailable
+                    AppConnectivityManager.Feedback.BACKEND_UNAVAILABLE -> R.string.backend_unavailable
+                }
+                showConnectivityToast(message)
+            }
+        }
 
         viewLifecycleOwner.lifecycleScope.launch {
 
@@ -144,6 +160,12 @@ class CurrentTemperatureFragment : ViewBindingFragment<FragmentCurrentTemperatur
 //            // down to descendant views.
 //            WindowInsetsCompat.CONSUMED
 //        }
+    }
+
+    private fun showConnectivityToast(message: Int) {
+        if (lastToastMessage == message) return
+        lastToastMessage = message
+        Toast.makeText(requireContext(), message, Toast.LENGTH_LONG).show()
     }
 
     @OptIn(ObsoleteCoroutinesApi::class)

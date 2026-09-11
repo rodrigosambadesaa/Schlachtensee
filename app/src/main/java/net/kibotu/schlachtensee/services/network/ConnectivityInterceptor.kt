@@ -22,6 +22,7 @@ class ConnectivityInterceptor(
                 hasPhysicalNetwork = ConnectivityAndInternetAccess.hasPhysicalNetwork(context)
             )
         ) {
+            connectivityManager.notifyNoNetwork()
             throw NoConnectedNetworkException()
         }
 

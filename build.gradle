@@ -2,9 +2,9 @@ apply plugin: 'jacoco'
 
 ext {
     RELEASE_APPLICATION_ID = "net.kibotu.schlachtensee"
-    RELEASE_VERSION_CODE = 40
-    RELEASE_VERSION_NAME = "2.0.0"
-    RELEASE_LOCAL_VERSION_NAME = "2.0.0"
+    RELEASE_VERSION_CODE = 41
+    RELEASE_VERSION_NAME = "2.0.1"
+    RELEASE_LOCAL_VERSION_NAME = "2.0.1"
 
     hasCredentials = project.rootProject.file('credentials.properties').exists()
 

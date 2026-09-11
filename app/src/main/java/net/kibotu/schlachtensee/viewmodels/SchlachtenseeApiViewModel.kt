@@ -1,6 +1,5 @@
 package net.kibotu.schlachtensee.viewmodels
 
-import android.content.Context
 import androidx.annotation.WorkerThread
 import androidx.lifecycle.ViewModel
 import kotlinx.coroutines.Dispatchers
@@ -12,7 +11,6 @@ import net.kibotu.resourceextension.stringFromAssets
 import net.kibotu.schlachtensee.models.app.Temperature
 import net.kibotu.schlachtensee.models.yearly.TemperatureHistory
 import net.kibotu.schlachtensee.services.network.AppConnectivityManager
-import net.kibotu.schlachtensee.services.network.ConnectivityAndInternetAccess
 import net.kibotu.schlachtensee.services.network.SchlachtenseeApi
 import org.koin.core.component.KoinApiExtension
 import org.koin.core.component.KoinComponent
@@ -45,16 +43,6 @@ class SchlachtenseeApiViewModel : ViewModel(), KoinComponent {
 
     suspend fun currentTemperature(): Float? = withContext(Dispatchers.IO) {
         runCatching { api.lastTemperature().toFloat() }.getOrNull()
-    }
-
-    /**
-     * Checks internet access using app resources first, falling back to external domains in extreme cases.
-     */
-    fun checkConnectivity(
-        context: Context,
-        callback: (ConnectivityAndInternetAccess.InternetResult) -> Unit
-    ) {
-        connectivityManager.checkInternetAccess(context, callback)
     }
 
     @WorkerThread
