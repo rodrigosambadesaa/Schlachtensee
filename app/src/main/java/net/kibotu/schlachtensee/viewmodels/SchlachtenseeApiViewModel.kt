@@ -16,6 +16,7 @@ import org.koin.core.component.KoinApiExtension
 import org.koin.core.component.KoinComponent
 import org.koin.core.component.inject
 import org.simpleframework.xml.core.Persister
+import kotlinx.coroutines.CancellationException
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -34,20 +35,26 @@ class SchlachtenseeApiViewModel : ViewModel(), KoinComponent {
         val offline = loadOfflineData()
         emit(offline)
 
-        val response = kotlin.runCatching { api.lastTemperature() }
-        Logger.v("Temperature", "t=${response}")
-
         (loadDaily() ?: loadYearly())
             ?.let { emit(it) }
     }.flowOn(Dispatchers.IO)
 
     suspend fun currentTemperature(): Float? = withContext(Dispatchers.IO) {
-        runCatching { api.lastTemperature().toFloat() }.getOrNull()
+        try {
+            api.lastTemperature().trim().toFloatOrNull()
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            Logger.e(error)
+            null
+        }
     }
 
     @WorkerThread
     private suspend fun loadDaily(): Temperature? = try {
         api.dailyTemperature().toTemperature("daily")
+    } catch (cancelled: CancellationException) {
+        throw cancelled
     } catch (e: Exception) {
         Logger.e(e)
         null
@@ -56,6 +63,8 @@ class SchlachtenseeApiViewModel : ViewModel(), KoinComponent {
     @WorkerThread
     private suspend fun loadYearly(): Temperature? = try {
         api.yearlyTemperature().toTemperature("yearly")
+    } catch (cancelled: CancellationException) {
+        throw cancelled
     } catch (e: Exception) {
         Logger.e(e)
         null

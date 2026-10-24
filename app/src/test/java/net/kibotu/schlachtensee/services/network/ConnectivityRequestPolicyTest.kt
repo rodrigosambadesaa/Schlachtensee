@@ -1,47 +1,83 @@
 package net.kibotu.schlachtensee.services.network
 
 import java.io.IOException
+import java.io.InterruptedIOException
+import java.net.ProtocolException
+import java.net.SocketTimeoutException
+import javax.net.ssl.SSLHandshakeException
+import javax.net.ssl.SSLPeerUnverifiedException
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ConnectivityRequestPolicyTest {
-
-    @Test
-    fun requestStartsOnlyWithUsableConnectivity() {
-        assertTrue(
-            ConnectivityRequestPolicy.shouldStartRequest(
-                isConnected = true,
-                hasPhysicalNetwork = true
-            )
-        )
-        assertFalse(
-            ConnectivityRequestPolicy.shouldStartRequest(
-                isConnected = true,
-                hasPhysicalNetwork = false
-            )
-        )
-        assertFalse(
-            ConnectivityRequestPolicy.shouldStartRequest(
-                isConnected = false,
-                hasPhysicalNetwork = true
-            )
-        )
+    @Test fun allNetworkStates() {
+        for (connected in listOf(false, true)) {
+            for (underlying in listOf(false, true)) {
+                assertEquals(
+                    connected && underlying,
+                    ConnectivityRequestPolicy.shouldStartRequest(connected, underlying)
+                )
+            }
+        }
     }
 
-    @Test
-    fun vpnOnlyNetworkIsRejectedWhenNoPhysicalNetworkExists() {
-        assertFalse(
-            ConnectivityRequestPolicy.shouldStartRequest(
-                isConnected = true,
-                hasPhysicalNetwork = false
-            )
-        )
-    }
-
-    @Test
-    fun onlyTransportFailuresTriggerGeneralDiagnostics() {
-        assertTrue(ConnectivityRequestPolicy.shouldDiagnose(IOException()))
+    @Test fun distinguishTransportErrorsFromTlsAndCancelledWork() {
+        assertTrue(ConnectivityRequestPolicy.shouldDiagnose(IOException("route broken")))
+        assertTrue(ConnectivityRequestPolicy.shouldDiagnose(SocketTimeoutException()))
+        assertFalse(ConnectivityRequestPolicy.shouldDiagnose(NoConnectedNetworkException()))
+        assertFalse(ConnectivityRequestPolicy.shouldDiagnose(SSLHandshakeException("certificate")))
+        assertFalse(ConnectivityRequestPolicy.shouldDiagnose(SSLPeerUnverifiedException("hostname")))
+        assertFalse(ConnectivityRequestPolicy.shouldDiagnose(ProtocolException("bad response")))
+        assertFalse(ConnectivityRequestPolicy.shouldDiagnose(InterruptedIOException("cancelled")))
         assertFalse(ConnectivityRequestPolicy.shouldDiagnose(IllegalStateException()))
+    }
+
+    @Test fun limiterUsesMonotonicClockAndRecoversAfterCooldown() {
+        var now = 1_000L
+        val limiter = DiagnosticRateLimiter({ now }, 8_000L)
+        assertTrue(limiter.tryAcquire())
+        assertFalse(limiter.tryAcquire())
+        now = 8_999L
+        assertFalse(limiter.tryAcquire())
+        now = 9_000L
+        assertTrue(limiter.tryAcquire())
+        // A test clock rollback is not allowed to keep the limiter stuck indefinitely.
+        now = 1L
+        assertTrue(limiter.tryAcquire())
+    }
+
+    @Test fun concurrentFailuresScheduleExactlyOneProbe() {
+        val limiter = DiagnosticRateLimiter({ 10_000L })
+        val threads = Executors.newFixedThreadPool(8)
+        val ready = CountDownLatch(8)
+        val go = CountDownLatch(1)
+        val completed = CountDownLatch(8)
+        val winners = AtomicInteger()
+        repeat(8) {
+            threads.execute {
+                try {
+                    ready.countDown()
+                    go.await()
+                    if (limiter.tryAcquire()) winners.incrementAndGet()
+                } finally {
+                    completed.countDown()
+                }
+            }
+        }
+        try {
+            assertTrue(ready.await(5, TimeUnit.SECONDS))
+            go.countDown()
+            assertTrue(completed.await(5, TimeUnit.SECONDS))
+            assertEquals(1, winners.get())
+        } finally {
+            go.countDown()
+            threads.shutdownNow()
+        }
     }
 }

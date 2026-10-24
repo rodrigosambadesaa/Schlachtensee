@@ -1,0 +1,39 @@
+name: Sync connectivity gist
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [master]
+    paths:
+      - '.github/workflows/sync-connectivity-gist.yml'
+      - '.github/scripts/sync_connectivity_gist.py'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: connectivity-gist-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          persist-credentials: true
+      - name: Import canonical Kotlin gist
+        run: python3 .github/scripts/sync_connectivity_gist.py
+      - name: Commit canonical source if it changed
+        run: |
+          if ! git diff --quiet -- app/src/main/java/net/kibotu/schlachtensee/services/network/ConnectivityAndInternetAccess.kt; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add app/src/main/java/net/kibotu/schlachtensee/services/network/ConnectivityAndInternetAccess.kt
+            git commit -m "Sync canonical Kotlin connectivity gist"
+            git push origin HEAD:master
+          else
+            echo "Connectivity gist already matches latest canonical Kotlin source"
+          fi

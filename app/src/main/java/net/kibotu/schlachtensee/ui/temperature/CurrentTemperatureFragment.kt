@@ -13,6 +13,8 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.updateLayoutParams
 import androidx.fragment.app.viewModels
 import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.repeatOnLifecycle
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ObsoleteCoroutinesApi
 import kotlinx.coroutines.channels.ticker
@@ -77,13 +79,15 @@ class CurrentTemperatureFragment : ViewBindingFragment<FragmentCurrentTemperatur
         val binding = requireNotNull(binding)
 
         viewLifecycleOwner.lifecycleScope.launch {
-            viewModel.connectivityManager.feedback.collectLatest { feedback ->
-                val message = when (feedback) {
-                    AppConnectivityManager.Feedback.NO_NETWORK -> R.string.network_offline
-                    AppConnectivityManager.Feedback.NO_INTERNET -> R.string.internet_unavailable
-                    AppConnectivityManager.Feedback.BACKEND_UNAVAILABLE -> R.string.backend_unavailable
+            viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                viewModel.connectivityManager.feedback.collectLatest { feedback ->
+                    val message = when (feedback) {
+                        AppConnectivityManager.Feedback.NO_NETWORK -> R.string.network_offline
+                        AppConnectivityManager.Feedback.NO_INTERNET -> R.string.internet_unavailable
+                        AppConnectivityManager.Feedback.BACKEND_UNAVAILABLE -> R.string.backend_unavailable
+                    }
+                    showConnectivityToast(message)
                 }
-                showConnectivityToast(message)
             }
         }
 
@@ -172,10 +176,14 @@ class CurrentTemperatureFragment : ViewBindingFragment<FragmentCurrentTemperatur
     private fun startFish() {
         val tickerChannel = ticker(delayMillis = 10_000, initialDelayMillis = 10_000)
 
-        lifecycleScope.launch {
-            for (event in tickerChannel) {
+        viewLifecycleOwner.lifecycleScope.launch {
+            try {
+                for (event in tickerChannel) {
                 binding?.fish?.cancelAnimation()
                 binding?.fish?.playAnimation()
+                }
+            } finally {
+                tickerChannel.cancel()
             }
         }
     }
@@ -186,9 +194,13 @@ class CurrentTemperatureFragment : ViewBindingFragment<FragmentCurrentTemperatur
 
         binding?.fluid?.enableCalming = true
 
-        lifecycleScope.launch {
-            for (event in tickerChannel) { // event is of type Unit, so we don't really care about it
+        viewLifecycleOwner.lifecycleScope.launch {
+            try {
+                for (event in tickerChannel) { // event is of type Unit, so we don't really care about it
                 binding?.fluid?.onShake(random.nextFloat())
+                }
+            } finally {
+                tickerChannel.cancel()
             }
         }
     }

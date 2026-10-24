@@ -2,6 +2,10 @@ package net.kibotu.schlachtensee.services.network
 
 import android.content.Context
 import java.io.IOException
+import java.io.InterruptedIOException
+import java.net.ProtocolException
+import java.net.SocketTimeoutException
+import javax.net.ssl.SSLException
 import okhttp3.Interceptor
 import okhttp3.Response
 
@@ -29,7 +33,7 @@ class ConnectivityInterceptor(
         return try {
             chain.proceed(chain.request())
         } catch (error: IOException) {
-            if (ConnectivityRequestPolicy.shouldDiagnose(error)) {
+            if (!chain.call().isCanceled() && ConnectivityRequestPolicy.shouldDiagnose(error)) {
                 connectivityManager.diagnoseGeneralInternetAccess(context)
             }
             throw error
@@ -43,7 +47,12 @@ internal object ConnectivityRequestPolicy {
         hasPhysicalNetwork: Boolean
     ): Boolean = isConnected && hasPhysicalNetwork
 
-    fun shouldDiagnose(error: Throwable): Boolean = error is IOException
+    fun shouldDiagnose(error: Throwable): Boolean =
+        error is IOException &&
+            error !is NoConnectedNetworkException &&
+            error !is SSLException &&
+            error !is ProtocolException &&
+            (error !is InterruptedIOException || error is SocketTimeoutException)
 }
 
 class NoConnectedNetworkException : IOException(
