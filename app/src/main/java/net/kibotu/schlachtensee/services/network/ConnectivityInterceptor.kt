@@ -31,7 +31,12 @@ class ConnectivityInterceptor(
         }
 
         return try {
-            chain.proceed(chain.request())
+            chain.proceed(chain.request()).also { response ->
+                // Preserve HTTP responses; a 5xx indicates a responding but failing server.
+                if (ConnectivityRequestPolicy.isBackendServerFailure(response.code)) {
+                    connectivityManager.notifyBackendUnavailable()
+                }
+            }
         } catch (error: IOException) {
             if (!chain.call().isCanceled() && ConnectivityRequestPolicy.shouldDiagnose(error)) {
                 connectivityManager.diagnoseGeneralInternetAccess(context)
@@ -46,6 +51,8 @@ internal object ConnectivityRequestPolicy {
         isConnected: Boolean,
         hasPhysicalNetwork: Boolean
     ): Boolean = isConnected && hasPhysicalNetwork
+
+    fun isBackendServerFailure(statusCode: Int): Boolean = statusCode in 500..599
 
     fun shouldDiagnose(error: Throwable): Boolean =
         error is IOException &&

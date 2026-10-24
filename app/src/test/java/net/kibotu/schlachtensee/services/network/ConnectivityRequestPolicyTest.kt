@@ -27,6 +27,15 @@ class ConnectivityRequestPolicyTest {
         }
     }
 
+    @Test fun preserveHttpStatusAndReportOnlyServerErrors() {
+        for (code in listOf(200, 201, 204, 301, 400, 401, 404, 408, 429)) {
+            assertFalse(ConnectivityRequestPolicy.isBackendServerFailure(code))
+        }
+        for (code in listOf(500, 502, 503, 504, 599)) {
+            assertTrue(ConnectivityRequestPolicy.isBackendServerFailure(code))
+        }
+    }
+
     @Test fun distinguishTransportErrorsFromTlsAndCancelledWork() {
         assertTrue(ConnectivityRequestPolicy.shouldDiagnose(IOException("route broken")))
         assertTrue(ConnectivityRequestPolicy.shouldDiagnose(SocketTimeoutException()))

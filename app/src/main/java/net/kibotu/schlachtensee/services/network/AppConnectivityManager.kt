@@ -52,6 +52,10 @@ class AppConnectivityManager {
         feedbackEvents.tryEmit(Feedback.NO_NETWORK)
     }
 
+    fun notifyBackendUnavailable() {
+        feedbackEvents.tryEmit(Feedback.BACKEND_UNAVAILABLE)
+    }
+
     /**
      * This is a *generic* reachability diagnostic, not a test of jmnberlin.de.
      * The real OkHttp failure must be preserved for the caller.
