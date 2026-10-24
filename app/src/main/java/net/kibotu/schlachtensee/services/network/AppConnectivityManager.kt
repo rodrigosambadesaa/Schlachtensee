@@ -33,8 +33,8 @@ internal class DiagnosticRateLimiter(
 /** Application-specific coordinator. The backend request is authoritative. */
 class AppConnectivityManager {
     companion object {
-        const val PRIMARY_APP_HOST = "http://jmnberlin.de"
-        const val PRIMARY_APP_ENDPOINT = "http://jmnberlin.de/jmn_ajax.php?anfrage=6"
+        const val PRIMARY_APP_HOST = "https://jmnberlin.de"
+        const val PRIMARY_APP_ENDPOINT = "https://jmnberlin.de/jmn_ajax.php?anfrage=6"
     }
 
     enum class Feedback { NO_NETWORK, NO_INTERNET, BACKEND_UNAVAILABLE }

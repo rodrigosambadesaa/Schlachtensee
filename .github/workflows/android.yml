@@ -25,16 +25,16 @@ jobs:
           distribution: temurin
           java-version: '17'
           cache: gradle
-      - name: Probe live backend transports (non-blocking)
+      - name: Probe live HTTPS backend (non-blocking)
         continue-on-error: true
         run: |
-          for scheme in https http; do
-            echo "::group::Backend via $scheme"
+          for endpoint in "jmn_ajax.php?anfrage=6" "jmn_ajax.php?anfrage=7&art=temperaturtag&offset=0"; do
+            echo "::group::Backend HTTPS: $endpoint"
             if curl --silent --show-error --fail --location --max-redirs 3 \
               --max-time 15 \
               --write-out "HTTP=%{http_code} final=%{url_effective}\\n" \
               --output /tmp/schlachtensee-backend-body \
-              "$scheme://jmnberlin.de/jmn_ajax.php?anfrage=6"; then
+              "https://jmnberlin.de/$endpoint"; then
               head -c 120 /tmp/schlachtensee-backend-body
               echo
             else

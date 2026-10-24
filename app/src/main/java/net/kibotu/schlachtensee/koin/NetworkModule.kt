@@ -20,7 +20,7 @@ val remoteDataSourceModule = module {
     single {
         createWebService<SchlachtenseeApi>(
             get(),
-            "http://jmnberlin.de/"
+            "https://jmnberlin.de/"
         )
     }
 }

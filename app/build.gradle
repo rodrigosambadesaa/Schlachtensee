@@ -142,6 +142,7 @@ android {
 dependencies {
 
     testImplementation testLibs.junit
+    testImplementation "com.squareup.okhttp3:mockwebserver:4.10.0"
 
     implementation libs.appCompat
     implementation libs.appCompatResources
