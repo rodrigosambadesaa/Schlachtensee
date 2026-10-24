@@ -179,8 +179,8 @@ class CurrentTemperatureFragment : ViewBindingFragment<FragmentCurrentTemperatur
         viewLifecycleOwner.lifecycleScope.launch {
             try {
                 for (event in tickerChannel) {
-                binding?.fish?.cancelAnimation()
-                binding?.fish?.playAnimation()
+                    binding?.fish?.cancelAnimation()
+                    binding?.fish?.playAnimation()
                 }
             } finally {
                 tickerChannel.cancel()
@@ -197,7 +197,7 @@ class CurrentTemperatureFragment : ViewBindingFragment<FragmentCurrentTemperatur
         viewLifecycleOwner.lifecycleScope.launch {
             try {
                 for (event in tickerChannel) { // event is of type Unit, so we don't really care about it
-                binding?.fluid?.onShake(random.nextFloat())
+                    binding?.fluid?.onShake(random.nextFloat())
                 }
             } finally {
                 tickerChannel.cancel()

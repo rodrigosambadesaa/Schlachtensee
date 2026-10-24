@@ -25,6 +25,23 @@ jobs:
           distribution: temurin
           java-version: '17'
           cache: gradle
+      - name: Probe live backend transports (non-blocking)
+        continue-on-error: true
+        run: |
+          for scheme in https http; do
+            echo "::group::Backend via $scheme"
+            if curl --silent --show-error --fail --location --max-redirs 3 \
+              --max-time 15 \
+              --write-out "HTTP=%{http_code} final=%{url_effective}\\n" \
+              --output /tmp/schlachtensee-backend-body \
+              "$scheme://jmnberlin.de/jmn_ajax.php?anfrage=6"; then
+              head -c 120 /tmp/schlachtensee-backend-body
+              echo
+            else
+              echo "Backend request failed (not a build failure)"
+            fi
+            echo "::endgroup::"
+          done
       - name: Install Android 33
         run: |
           SDK_MANAGER="$(find "${ANDROID_HOME:-/usr/local/lib/android/sdk}/cmdline-tools" -type f -name sdkmanager | head -n 1)"
