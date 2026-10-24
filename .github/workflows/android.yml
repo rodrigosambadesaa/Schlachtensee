@@ -25,10 +25,8 @@ jobs:
           distribution: temurin
           java-version: '17'
           cache: gradle
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
       - name: Install Android 33
-        run: sdkmanager "platforms;android-33" "build-tools;33.0.1"
+        run: sdkmanager --install "platforms;android-33" "build-tools;33.0.1"
       - name: Run Android unit tests, assemble and lint
         run: |
           chmod +x ./gradlew
