@@ -120,6 +120,7 @@ class ConnectivityAndInternetAccess private constructor(
         fun onResult(result: IcmpResult)
     }
 
+    @ConsistentCopyVisibility
     data class InternetResult internal constructor(
         val reachable: Boolean,
         val reachedHost: String?,
@@ -135,6 +136,7 @@ class ConnectivityAndInternetAccess private constructor(
      * This is not an authoritative Internet-availability signal because many
      * otherwise functional networks deliberately filter ICMP.
      */
+    @ConsistentCopyVisibility
     data class IcmpResult internal constructor(
         val reachable: Boolean,
         val reachedAddress: String?,
@@ -170,6 +172,7 @@ class ConnectivityAndInternetAccess private constructor(
     }
 
     /** Cheap passive state of the application's default network. */
+    @ConsistentCopyVisibility
     data class NetworkState internal constructor(
         val connected: Boolean,
         val internetValidated: Boolean,
